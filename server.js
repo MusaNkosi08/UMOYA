@@ -4,6 +4,7 @@ const path = require("node:path");
 
 const PORT = Number(process.env.PORT) || 3000;
 const MODEL = process.env.MODEL || "openai/gpt-4o-mini";
+const TOKEN = process.env.GITHUB_TOKEN || process.env.GITHUB_MODELS_TOKEN || "";
 const endpoint = "https://models.github.ai/inference/chat/completions";
 const systemPrompt = `You are UMOYA, an African learning assistant. Users often code-switch between English, isiXhosa, isiZulu, Sesotho and Afrikaans. Understand the full mixed meaning and reply in the same language mix the user used. First line must be exactly "DETECTED: <languages>". Then explain in style {mode}: simple = short, plain words; student = numbered steps with one check question; professional = precise and concise; african = use a familiar African everyday analogy (taxi rank, spaza shop, stokvel, load shedding). If unsure of a cultural fact, say so. Never invent proverbs or history.`;
 
@@ -31,17 +32,23 @@ async function chat(req, res) {
   if (!Array.isArray(input.messages) || !input.messages.length) {
     return send(res, 400, { error: "Messages are required." });
   }
+  if (!TOKEN) {
+    return send(res, 503, { error: "UMOYA is not connected to its language model yet. Add GITHUB_TOKEN to the server environment." });
+  }
 
   const messages = input.messages.slice(-6).map((message) => ({
     role: message && ["user", "assistant"].includes(message.role) ? message.role : "user",
     content: String(message && message.content || "").slice(0, 500)
-  }));
+  })).filter((message) => message.content);
+  if (!messages.length) return send(res, 400, { error: "Your message cannot be empty." });
+
   try {
     const response = await fetch(endpoint, {
       method: "POST",
       headers: {
+        Accept: "application/json",
         "Content-Type": "application/json",
-        Authorization: "Bearer " + (process.env["GITHUB_" + "TOKEN"] || "")
+        Authorization: `Bearer ${TOKEN}`
       },
       body: JSON.stringify({
         model: MODEL,
@@ -50,9 +57,12 @@ async function chat(req, res) {
       })
     });
     const result = await response.json();
-    if (!response.ok) return send(res, response.status >= 500 ? 502 : response.status, { error: result.error?.message || "The learning assistant is unavailable." });
+    if (!response.ok) {
+      const message = typeof result.error === "string" ? result.error : result.error?.message;
+      return send(res, response.status >= 500 ? 502 : response.status, { error: message || "The learning assistant is unavailable." });
+    }
     const reply = result.choices?.[0]?.message?.content;
-    if (typeof reply !== "string") return send(res, 502, { error: "The learning assistant returned an unexpected response." });
+    if (typeof reply !== "string" || !reply.trim()) return send(res, 502, { error: "The learning assistant returned an empty response." });
     return send(res, 200, { reply });
   } catch {
     return send(res, 502, { error: "Could not reach the learning assistant. Please try again." });
